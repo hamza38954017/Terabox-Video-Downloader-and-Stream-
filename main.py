@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── CONFIG ────────────────────────────────────────────────────
-BOT_TOKEN = "8762330219:AAFGnP32L61KXvVKDhQxcihnOvJeEUpSHw4"
+BOT_TOKEN = "8762330219:AAE019vA-rM_jh4oISBjgVjNphaJgvOz2yk"
 WEBAPP_URL = "https://terabox-video-downloader-and-stream.onrender.com"
 PORT = 5000
 
