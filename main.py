@@ -1,4 +1,3 @@
-
 # ============================================================
 # TeraScrap - Main Application
 # Developer: @Hamza3895
@@ -34,12 +33,17 @@ HEADERS = {
     "accept-language": "en-US,en;q=0.9",
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
+
+# Added the missing sec-fetch headers critical for bypassing 403s on Render
 API_HEADERS = {
     "accept": "*/*",
     "accept-language": "en-US,en;q=0.9",
     "content-type": "application/json",
     "origin": "https://iteraplay.com",
     "referer": "https://iteraplay.com/",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
@@ -62,15 +66,27 @@ def load_netscape_cookies(cookie_file: str) -> dict:
 def create_session(cookie_file: str) -> cf_requests.Session:
     session = cf_requests.Session(impersonate="chrome124")
     try:
+        # Step 1: Fresh homepage visit to generate a new session_id for Render's IP
+        logger.info("🌐 Step 1: Fresh homepage visit (getting new session_id)...")
         session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
-        time.sleep(0.5)
+        time.sleep(1)
+        
         if os.path.exists(cookie_file):
             all_cookies = load_netscape_cookies(cookie_file)
+            
+            # Inject ONLY login_token + remember_me
             inject = {k: v for k, v in all_cookies.items()
                       if k in ("login_token", "remember_me")}
             for name, value in inject.items():
                 session.cookies.set(name, value, domain="iteraplay.com")
+            
+            # Step 2: Re-visit homepage so server binds the login token to the new session
+            logger.info(f"🍪 Step 2: Injected login cookies & re-visiting to bind account...")
             session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
+            time.sleep(1)
+        else:
+            logger.warning("⚠️ No cookie file — running as guest")
+            
     except Exception as e:
         logger.error(f"Session warmup error: {e}")
     return session
@@ -85,49 +101,77 @@ def get_session(cookie_index: int) -> cf_requests.Session:
 # ── VIDEO FETCHER ──────────────────────────────────────────────
 def fetch_video_info(url: str) -> dict:
     global current_cookie_index
-    tried = 0
+    tried_cookies = 0
     last_error = None
-    while tried < len(COOKIE_FILES):
+    
+    while tried_cookies < len(COOKIE_FILES):
         idx = current_cookie_index % len(COOKIE_FILES)
         session = get_session(idx)
-        try:
-            resp = session.post(
-                "https://iteraplay.com/api/download",
-                headers=API_HEADERS,
-                json={"url": url},
-                timeout=30
-            )
-            if resp.status_code == 429:
-                logger.warning(f"Cookie {idx+1} rate limited, switching...")
-                current_cookie_index = (idx + 1) % len(COOKIE_FILES)
-                if idx in SESSIONS:
-                    del SESSIONS[idx]
-                tried += 1
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("status") != "success":
-                raise ValueError(f"API error: {data.get('status')}")
-            files = data.get("list", [])
-            if not files:
-                raise ValueError("No files returned")
-            file_info = files[0]
-            name = file_info.get("name", "")
-            if any(kw in name for kw in ("Token", "token", "expired", "mismatch", "Cookie")):
-                logger.warning(f"Session error with cookie {idx+1}: {name}")
-                current_cookie_index = (idx + 1) % len(COOKIE_FILES)
-                if idx in SESSIONS:
-                    del SESSIONS[idx]
-                tried += 1
-                continue
-            return file_info
-        except Exception as e:
-            last_error = e
-            logger.error(f"Cookie {idx+1} failed: {e}")
-            current_cookie_index = (idx + 1) % len(COOKIE_FILES)
-            if idx in SESSIONS:
-                del SESSIONS[idx]
-            tried += 1
+        
+        retries = 3
+        wait_time = 5
+        
+        for attempt in range(1, retries + 1):
+            try:
+                resp = session.post(
+                    "https://iteraplay.com/api/download",
+                    headers=API_HEADERS,
+                    json={"url": url},
+                    timeout=30
+                )
+                
+                # Handle Rate Limiting
+                if resp.status_code == 429:
+                    logger.warning(f"Cookie {idx+1} rate limited (429) on attempt {attempt}.")
+                    if attempt < retries:
+                        time.sleep(wait_time)
+                        wait_time = min(wait_time * 2, 120)
+                        continue
+                    else:
+                        resp.raise_for_status()
+
+                # Raise for 403 or other bad statuses
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if data.get("status") != "success":
+                    raise ValueError(f"API error: {data.get('status')}")
+                    
+                files = data.get("list", [])
+                if not files:
+                    raise ValueError("No files returned")
+                    
+                file_info = files[0]
+                name = file_info.get("name", "")
+                
+                # Handle expired tokens dynamically
+                if any(kw in name for kw in ("Token", "token", "expired", "mismatch", "refresh", "Cookie")):
+                    logger.warning(f"Session error with cookie {idx+1}: {name}")
+                    if attempt < retries:
+                        logger.info("🔄 Re-initialising session and retrying...")
+                        session.cookies.clear()
+                        SESSIONS[idx] = create_session(COOKIE_FILES[idx])
+                        session = SESSIONS[idx]
+                        time.sleep(3)
+                        continue
+                    else:
+                        raise RuntimeError(f"Session error after retries: {name}")
+
+                return file_info
+                
+            except Exception as e:
+                last_error = e
+                logger.error(f"Attempt {attempt} failed on cookie {idx+1}: {e}")
+                if attempt < retries:
+                    time.sleep(2)
+                    
+        # If we exhaust retries for this cookie, move to the next cookie in list
+        logger.error(f"Cookie {idx+1} failed completely. Switching to next...")
+        current_cookie_index = (idx + 1) % len(COOKIE_FILES)
+        if idx in SESSIONS:
+            del SESSIONS[idx]
+        tried_cookies += 1
+        
     raise RuntimeError(f"All cookies failed. Last error: {last_error}")
 
 # ── FLASK APP ──────────────────────────────────────────────────
@@ -926,65 +970,72 @@ let streamData = null;
 async function doFetchThenDownload(){
   const url = document.getElementById('urlIn').value.trim();
   if(!url){ showStatus('Please enter a URL!','error'); return; }
-  showStatus('Fetching video info...','loading');
-  document.getElementById('prog').style.display='block';
-  try {
-    const r = await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-    const d = await r.json();
-    if(d.error) throw new Error(d.error);
-    lastUrl = url;
-    const qualities = d.info.qualities;
-    const grid = document.getElementById('qGrid');
-    grid.innerHTML='';
-    qualities.forEach(q=>{
-      const b=document.createElement('button');b.className='q-btn';b.textContent=q;
-      b.onclick=()=>{selectedQ=q;document.querySelectorAll('.q-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');};
-      grid.appendChild(b);
-    });
-    if(qualities.length>0){selectedQ=qualities[qualities.length-1]; grid.lastChild.classList.add('active');}
-    showStatus('Quality selected! Click again to download.','loading');
-    document.getElementById('prog').style.display='none';
-  } catch(e){
-    showStatus('Error: '+e.message,'error');
-    document.getElementById('prog').style.display='none';
-  }
-}
-
-async function doFetchThenDownload(){
-  const url = document.getElementById('urlIn').value.trim();
-  if(!url){ showStatus('Please enter a URL!','error'); return; }
+  
   if(lastUrl !== url || !streamData){
     showStatus('Fetching video info...','loading');
     document.getElementById('prog').style.display='block';
     try{
-      const r=await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-      const d=await r.json();
+      const r = await fetch('/api/fetch', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({url})
+      });
+      const d = await r.json();
       if(d.error) throw new Error(d.error);
-      lastUrl=url;
-      const grid=document.getElementById('qGrid'); grid.innerHTML='';
-      d.info.qualities.forEach(q=>{
-        const b=document.createElement('button');b.className='q-btn';b.textContent=q;
-        b.onclick=()=>{selectedQ=q;document.querySelectorAll('.q-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');};
+      
+      lastUrl = url;
+      streamData = d.info;
+      const grid = document.getElementById('qGrid'); 
+      grid.innerHTML='';
+      
+      d.info.qualities.forEach(q => {
+        const b = document.createElement('button');
+        b.className = 'q-btn'; 
+        b.textContent = q;
+        b.onclick = () => {
+            selectedQ = q; 
+            document.querySelectorAll('.q-btn').forEach(x => x.classList.remove('active')); 
+            b.classList.add('active');
+        };
         grid.appendChild(b);
       });
-      if(d.info.qualities.length>0){selectedQ=d.info.qualities[d.info.qualities.length-1];grid.lastChild.classList.add('active');}
+      
+      if(d.info.qualities.length > 0){
+          selectedQ = d.info.qualities[d.info.qualities.length-1];
+          grid.lastChild.classList.add('active');
+      }
+      
       document.getElementById('prog').style.display='none';
       showStatus('✅ Select quality & click again to download','loading');
       return;
-    }catch(e){showStatus('Error: '+e.message,'error');document.getElementById('prog').style.display='none';return;}
+      
+    } catch(e) {
+        showStatus('Error: '+e.message,'error');
+        document.getElementById('prog').style.display='none';
+        return;
+    }
   }
+  
   // Actually download
   showStatus('Getting stream URL...','loading');
   document.getElementById('prog').style.display='block';
   try{
-    const r=await fetch('/api/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,quality:selectedQ})});
-    const d=await r.json();
+    const r = await fetch('/api/stream', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({url, quality: selectedQ})
+    });
+    const d = await r.json();
     if(d.error) throw new Error(d.error);
-    window.open(d.stream_url,'_blank');
+    
+    window.open(d.stream_url, '_blank');
     showStatus('✅ Stream opened! Use a download manager for best results.','loading');
-  }catch(e){showStatus('Error: '+e.message,'error');}
+  } catch(e) {
+      showStatus('Error: '+e.message,'error');
+  }
   document.getElementById('prog').style.display='none';
-  lastUrl='';
+  lastUrl = '';
+  streamData = null;
 }
 
 function showStatus(msg,type){
