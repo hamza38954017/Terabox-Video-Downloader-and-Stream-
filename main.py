@@ -23,28 +23,42 @@ BOT_TOKEN = "8762330219:AAFGnP32L61KXvVKDhQxcihnOvJeEUpSHw4"
 WEBAPP_URL = "https://terabox-video-downloader-and-stream.onrender.com"
 PORT = 5000
 
+# Fix 1: Ensure absolute path so Render always finds the cookie file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_FILES = [
-    "cookies1.txt"
+    os.path.join(BASE_DIR, "cookies1.txt")
 ]
 current_cookie_index = 0
+
+# Fix 2: Proxy support (If Render is permanently blocked, add your proxy URL here)
+# Example: PROXY = "http://username:password@proxyserver:port"
+PROXY = None 
+
+# Fix 3: Bulletproof Windows Headers to bypass Cloudflare 403
+WINDOWS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-US,en;q=0.9",
-    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "user-agent": WINDOWS_UA,
 }
 
-# Added the missing sec-fetch headers critical for bypassing 403s on Render
 API_HEADERS = {
     "accept": "*/*",
     "accept-language": "en-US,en;q=0.9",
     "content-type": "application/json",
     "origin": "https://iteraplay.com",
     "referer": "https://iteraplay.com/",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
-    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "user-agent": WINDOWS_UA,
 }
 
 # ── COOKIE / SESSION ──────────────────────────────────────────
@@ -60,32 +74,34 @@ def load_netscape_cookies(cookie_file: str) -> dict:
                 if len(parts) >= 7:
                     cookies[parts[5]] = parts[6]
     except FileNotFoundError:
-        logger.warning(f"Cookie file not found: {cookie_file}")
+        logger.warning(f"❌ Cookie file not found: {cookie_file}")
     return cookies
 
 def create_session(cookie_file: str) -> cf_requests.Session:
-    session = cf_requests.Session(impersonate="chrome124")
+    # Add proxy if defined to bypass IP bans
+    proxies = {"http": PROXY, "https": PROXY} if PROXY else None
+    session = cf_requests.Session(impersonate="chrome124", proxies=proxies)
+    
     try:
-        # Step 1: Fresh homepage visit to generate a new session_id for Render's IP
         logger.info("🌐 Step 1: Fresh homepage visit (getting new session_id)...")
         session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
         time.sleep(1)
         
+        logger.info(f"🔎 Looking for cookie file at: {cookie_file}")
         if os.path.exists(cookie_file):
+            logger.info("✅ Cookie file found! Injecting cookies...")
             all_cookies = load_netscape_cookies(cookie_file)
             
-            # Inject ONLY login_token + remember_me
             inject = {k: v for k, v in all_cookies.items()
                       if k in ("login_token", "remember_me")}
             for name, value in inject.items():
                 session.cookies.set(name, value, domain="iteraplay.com")
             
-            # Step 2: Re-visit homepage so server binds the login token to the new session
-            logger.info(f"🍪 Step 2: Injected login cookies & re-visiting to bind account...")
+            logger.info(f"🍪 Step 2: Re-visiting to bind account...")
             session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
             time.sleep(1)
         else:
-            logger.warning("⚠️ No cookie file — running as guest")
+            logger.warning("⚠️ No cookie file found — running as guest (High chance of 403)")
             
     except Exception as e:
         logger.error(f"Session warmup error: {e}")
@@ -120,7 +136,6 @@ def fetch_video_info(url: str) -> dict:
                     timeout=30
                 )
                 
-                # Handle Rate Limiting
                 if resp.status_code == 429:
                     logger.warning(f"Cookie {idx+1} rate limited (429) on attempt {attempt}.")
                     if attempt < retries:
@@ -130,7 +145,6 @@ def fetch_video_info(url: str) -> dict:
                     else:
                         resp.raise_for_status()
 
-                # Raise for 403 or other bad statuses
                 resp.raise_for_status()
                 data = resp.json()
                 
@@ -144,7 +158,6 @@ def fetch_video_info(url: str) -> dict:
                 file_info = files[0]
                 name = file_info.get("name", "")
                 
-                # Handle expired tokens dynamically
                 if any(kw in name for kw in ("Token", "token", "expired", "mismatch", "refresh", "Cookie")):
                     logger.warning(f"Session error with cookie {idx+1}: {name}")
                     if attempt < retries:
@@ -165,7 +178,6 @@ def fetch_video_info(url: str) -> dict:
                 if attempt < retries:
                     time.sleep(2)
                     
-        # If we exhaust retries for this cookie, move to the next cookie in list
         logger.error(f"Cookie {idx+1} failed completely. Switching to next...")
         current_cookie_index = (idx + 1) % len(COOKIE_FILES)
         if idx in SESSIONS:
@@ -196,7 +208,7 @@ def api_fetch():
             "quality": info.get("quality", "N/A"),
             "duration": info.get("duration", "N/A"),
             "qualities": list(streams.keys()) if isinstance(streams, dict) else [],
-            "_streams": streams  # hidden from direct display
+            "_streams": streams
         }
         return jsonify({"status": "success", "info": safe_info})
     except Exception as e:
