@@ -20,13 +20,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── CONFIG ────────────────────────────────────────────────────
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-WEBAPP_URL  = os.getenv("WEBAPP_URL", "https://your-render-app.onrender.com")
-PORT        = int(os.getenv("PORT", 5000))
+BOT_TOKEN = "8762330219:AAFGnP32L61KXvVKDhQxcihnOvJeEUpSHw4"
+WEBAPP_URL = "https://your-render-app.onrender.com"
+PORT = 5000
 
 COOKIE_FILES = [
-    "cookie1.txt", "cookie2.txt", "cookie3.txt",
-    "cookie4.txt", "cookie5.txt"
+    "cookies1.txt", "cookies2.txt", "cookies3.txt",
+    "cookies4.txt", "cookies5.txt"
 ]
 current_cookie_index = 0
 
