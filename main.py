@@ -23,42 +23,41 @@ BOT_TOKEN = "8762330219:AAFGnP32L61KXvVKDhQxcihnOvJeEUpSHw4"
 WEBAPP_URL = "https://terabox-video-downloader-and-stream.onrender.com"
 PORT = 5000
 
-# Fix 1: Ensure absolute path so Render always finds the cookie file
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_FILES = [
-    os.path.join(BASE_DIR, "cookies1.txt")
+    "cookies1.txt",
+    "cookies2.txt",
+    "cookies3.txt",
+    "cookies4.txt",
+    "cookies5.txt"
 ]
 current_cookie_index = 0
 
-# Fix 2: Proxy support (If Render is permanently blocked, add your proxy URL here)
-# Example: PROXY = "http://username:password@proxyserver:port"
-PROXY = None 
-
-# Fix 3: Bulletproof Windows Headers to bypass Cloudflare 403
-WINDOWS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+PROXIES = [
+    "http://ayxvpdzm:mhdlody0d0x6@31.59.20.176:6754",
+    "http://ayxvpdzm:mhdlody0d0x6@198.23.239.134:6540",
+    "http://ayxvpdzm:mhdlody0d0x6@45.38.107.97:6014",
+    "http://ayxvpdzm:mhdlody0d0x6@107.172.163.27:6543",
+    "http://ayxvpdzm:mhdlody0d0x6@198.105.121.200:6462",
+    "http://ayxvpdzm:mhdlody0d0x6@216.10.27.159:6837",
+    "http://ayxvpdzm:mhdlody0d0x6@142.111.67.146:5611",
+    "http://ayxvpdzm:mhdlody0d0x6@191.96.254.138:6185",
+    "http://ayxvpdzm:mhdlody0d0x6@31.58.9.4:6077",
+    "http://ayxvpdzm:mhdlody0d0x6@198.46.161.42:5092"
+]
+current_proxy_index = 0
 
 HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-US,en;q=0.9",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "user-agent": WINDOWS_UA,
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
-
 API_HEADERS = {
     "accept": "*/*",
     "accept-language": "en-US,en;q=0.9",
     "content-type": "application/json",
     "origin": "https://iteraplay.com",
     "referer": "https://iteraplay.com/",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "user-agent": WINDOWS_UA,
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
 # ── COOKIE / SESSION ──────────────────────────────────────────
@@ -74,117 +73,95 @@ def load_netscape_cookies(cookie_file: str) -> dict:
                 if len(parts) >= 7:
                     cookies[parts[5]] = parts[6]
     except FileNotFoundError:
-        logger.warning(f"❌ Cookie file not found: {cookie_file}")
+        logger.warning(f"Cookie file not found: {cookie_file}")
     return cookies
 
-def create_session(cookie_file: str) -> cf_requests.Session:
-    # Add proxy if defined to bypass IP bans
-    proxies = {"http": PROXY, "https": PROXY} if PROXY else None
+def create_session(cookie_file: str, proxy_url: str) -> cf_requests.Session:
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     session = cf_requests.Session(impersonate="chrome124", proxies=proxies)
-    
     try:
-        logger.info("🌐 Step 1: Fresh homepage visit (getting new session_id)...")
         session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
-        time.sleep(1)
-        
-        logger.info(f"🔎 Looking for cookie file at: {cookie_file}")
+        time.sleep(0.5)
         if os.path.exists(cookie_file):
-            logger.info("✅ Cookie file found! Injecting cookies...")
             all_cookies = load_netscape_cookies(cookie_file)
-            
             inject = {k: v for k, v in all_cookies.items()
                       if k in ("login_token", "remember_me")}
             for name, value in inject.items():
                 session.cookies.set(name, value, domain="iteraplay.com")
-            
-            logger.info(f"🍪 Step 2: Re-visiting to bind account...")
             session.get("https://iteraplay.com/", headers=HEADERS, timeout=30)
-            time.sleep(1)
-        else:
-            logger.warning("⚠️ No cookie file found — running as guest (High chance of 403)")
-            
     except Exception as e:
         logger.error(f"Session warmup error: {e}")
     return session
 
 SESSIONS = {}
 
-def get_session(cookie_index: int) -> cf_requests.Session:
-    if cookie_index not in SESSIONS:
-        SESSIONS[cookie_index] = create_session(COOKIE_FILES[cookie_index])
-    return SESSIONS[cookie_index]
-
 # ── VIDEO FETCHER ──────────────────────────────────────────────
 def fetch_video_info(url: str) -> dict:
-    global current_cookie_index
-    tried_cookies = 0
+    global current_cookie_index, current_proxy_index
+    max_attempts = len(PROXIES) * len(COOKIE_FILES)
+    attempts = 0
     last_error = None
     
-    while tried_cookies < len(COOKIE_FILES):
-        idx = current_cookie_index % len(COOKIE_FILES)
-        session = get_session(idx)
+    while attempts < max_attempts:
+        c_idx = current_cookie_index % len(COOKIE_FILES)
+        p_idx = current_proxy_index % len(PROXIES)
         
-        retries = 3
-        wait_time = 5
+        session_key = f"{c_idx}_{p_idx}"
+        if session_key not in SESSIONS:
+            SESSIONS[session_key] = create_session(COOKIE_FILES[c_idx], PROXIES[p_idx])
+        session = SESSIONS[session_key]
         
-        for attempt in range(1, retries + 1):
-            try:
-                resp = session.post(
-                    "https://iteraplay.com/api/download",
-                    headers=API_HEADERS,
-                    json={"url": url},
-                    timeout=30
-                )
+        try:
+            resp = session.post(
+                "https://iteraplay.com/api/download",
+                headers=API_HEADERS,
+                json={"url": url},
+                timeout=30
+            )
+            
+            # Rate limited -> Rotate Cookie
+            if resp.status_code == 429:
+                logger.warning(f"Cookie {c_idx+1} rate limited. Switching cookie...")
+                current_cookie_index = (current_cookie_index + 1) % len(COOKIE_FILES)
+                if session_key in SESSIONS:
+                    del SESSIONS[session_key]
+                attempts += 1
+                continue
                 
-                if resp.status_code == 429:
-                    logger.warning(f"Cookie {idx+1} rate limited (429) on attempt {attempt}.")
-                    if attempt < retries:
-                        time.sleep(wait_time)
-                        wait_time = min(wait_time * 2, 120)
-                        continue
-                    else:
-                        resp.raise_for_status()
-
-                resp.raise_for_status()
-                data = resp.json()
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data.get("status") != "success":
+                raise ValueError(f"API error: {data.get('status')}")
                 
-                if data.get("status") != "success":
-                    raise ValueError(f"API error: {data.get('status')}")
-                    
-                files = data.get("list", [])
-                if not files:
-                    raise ValueError("No files returned")
-                    
-                file_info = files[0]
-                name = file_info.get("name", "")
+            files = data.get("list", [])
+            if not files:
+                raise ValueError("No files returned")
                 
-                if any(kw in name for kw in ("Token", "token", "expired", "mismatch", "refresh", "Cookie")):
-                    logger.warning(f"Session error with cookie {idx+1}: {name}")
-                    if attempt < retries:
-                        logger.info("🔄 Re-initialising session and retrying...")
-                        session.cookies.clear()
-                        SESSIONS[idx] = create_session(COOKIE_FILES[idx])
-                        session = SESSIONS[idx]
-                        time.sleep(3)
-                        continue
-                    else:
-                        raise RuntimeError(f"Session error after retries: {name}")
-
-                return file_info
+            file_info = files[0]
+            name = file_info.get("name", "")
+            
+            # Token expired -> Rotate Cookie
+            if any(kw in name for kw in ("Token", "token", "expired", "mismatch", "Cookie")):
+                logger.warning(f"Session error with cookie {c_idx+1}: {name}. Switching cookie...")
+                current_cookie_index = (current_cookie_index + 1) % len(COOKIE_FILES)
+                if session_key in SESSIONS:
+                    del SESSIONS[session_key]
+                attempts += 1
+                continue
                 
-            except Exception as e:
-                last_error = e
-                logger.error(f"Attempt {attempt} failed on cookie {idx+1}: {e}")
-                if attempt < retries:
-                    time.sleep(2)
-                    
-        logger.error(f"Cookie {idx+1} failed completely. Switching to next...")
-        current_cookie_index = (idx + 1) % len(COOKIE_FILES)
-        if idx in SESSIONS:
-            del SESSIONS[idx]
-        tried_cookies += 1
-        
-    raise RuntimeError(f"All cookies failed. Last error: {last_error}")
+            return file_info
+            
+        except Exception as e:
+            # Proxy error / 403 Forbidden -> Rotate Proxy
+            last_error = e
+            logger.error(f"Proxy {p_idx+1} failed: {e}. Switching proxy...")
+            current_proxy_index = (current_proxy_index + 1) % len(PROXIES)
+            if session_key in SESSIONS:
+                del SESSIONS[session_key]
+            attempts += 1
+            
+    raise RuntimeError(f"All proxies and cookies failed. Last error: {last_error}")
 
 # ── FLASK APP ──────────────────────────────────────────────────
 flask_app = Flask(__name__)
@@ -208,7 +185,7 @@ def api_fetch():
             "quality": info.get("quality", "N/A"),
             "duration": info.get("duration", "N/A"),
             "qualities": list(streams.keys()) if isinstance(streams, dict) else [],
-            "_streams": streams
+            "_streams": streams  # hidden from direct display
         }
         return jsonify({"status": "success", "info": safe_info})
     except Exception as e:
@@ -982,72 +959,65 @@ let streamData = null;
 async function doFetchThenDownload(){
   const url = document.getElementById('urlIn').value.trim();
   if(!url){ showStatus('Please enter a URL!','error'); return; }
-  
+  showStatus('Fetching video info...','loading');
+  document.getElementById('prog').style.display='block';
+  try {
+    const r = await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    lastUrl = url;
+    const qualities = d.info.qualities;
+    const grid = document.getElementById('qGrid');
+    grid.innerHTML='';
+    qualities.forEach(q=>{
+      const b=document.createElement('button');b.className='q-btn';b.textContent=q;
+      b.onclick=()=>{selectedQ=q;document.querySelectorAll('.q-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');};
+      grid.appendChild(b);
+    });
+    if(qualities.length>0){selectedQ=qualities[qualities.length-1]; grid.lastChild.classList.add('active');}
+    showStatus('Quality selected! Click again to download.','loading');
+    document.getElementById('prog').style.display='none';
+  } catch(e){
+    showStatus('Error: '+e.message,'error');
+    document.getElementById('prog').style.display='none';
+  }
+}
+
+async function doFetchThenDownload(){
+  const url = document.getElementById('urlIn').value.trim();
+  if(!url){ showStatus('Please enter a URL!','error'); return; }
   if(lastUrl !== url || !streamData){
     showStatus('Fetching video info...','loading');
     document.getElementById('prog').style.display='block';
     try{
-      const r = await fetch('/api/fetch', {
-        method: 'POST', 
-        headers: {'Content-Type': 'application/json'}, 
-        body: JSON.stringify({url})
-      });
-      const d = await r.json();
+      const r=await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+      const d=await r.json();
       if(d.error) throw new Error(d.error);
-      
-      lastUrl = url;
-      streamData = d.info;
-      const grid = document.getElementById('qGrid'); 
-      grid.innerHTML='';
-      
-      d.info.qualities.forEach(q => {
-        const b = document.createElement('button');
-        b.className = 'q-btn'; 
-        b.textContent = q;
-        b.onclick = () => {
-            selectedQ = q; 
-            document.querySelectorAll('.q-btn').forEach(x => x.classList.remove('active')); 
-            b.classList.add('active');
-        };
+      lastUrl=url;
+      const grid=document.getElementById('qGrid'); grid.innerHTML='';
+      d.info.qualities.forEach(q=>{
+        const b=document.createElement('button');b.className='q-btn';b.textContent=q;
+        b.onclick=()=>{selectedQ=q;document.querySelectorAll('.q-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');};
         grid.appendChild(b);
       });
-      
-      if(d.info.qualities.length > 0){
-          selectedQ = d.info.qualities[d.info.qualities.length-1];
-          grid.lastChild.classList.add('active');
-      }
-      
+      if(d.info.qualities.length>0){selectedQ=d.info.qualities[d.info.qualities.length-1];grid.lastChild.classList.add('active');}
       document.getElementById('prog').style.display='none';
       showStatus('✅ Select quality & click again to download','loading');
       return;
-      
-    } catch(e) {
-        showStatus('Error: '+e.message,'error');
-        document.getElementById('prog').style.display='none';
-        return;
-    }
+    }catch(e){showStatus('Error: '+e.message,'error');document.getElementById('prog').style.display='none';return;}
   }
-  
   // Actually download
   showStatus('Getting stream URL...','loading');
   document.getElementById('prog').style.display='block';
   try{
-    const r = await fetch('/api/stream', {
-        method: 'POST', 
-        headers: {'Content-Type': 'application/json'}, 
-        body: JSON.stringify({url, quality: selectedQ})
-    });
-    const d = await r.json();
+    const r=await fetch('/api/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,quality:selectedQ})});
+    const d=await r.json();
     if(d.error) throw new Error(d.error);
-    
-    window.open(d.stream_url, '_blank');
+    window.open(d.stream_url,'_blank');
     showStatus('✅ Stream opened! Use a download manager for best results.','loading');
-  } catch(e) {
-      showStatus('Error: '+e.message,'error');
-  }
+  }catch(e){showStatus('Error: '+e.message,'error');}
   document.getElementById('prog').style.display='none';
-  lastUrl = '';
-  streamData = null;
+  lastUrl='';
 }
 
 function showStatus(msg,type){
