@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # ── CONFIG ────────────────────────────────────────────────────
 BOT_TOKEN = "8762330219:AAFGnP32L61KXvVKDhQxcihnOvJeEUpSHw4"
-WEBAPP_URL = "https://your-render-app.onrender.com"
+WEBAPP_URL = "https://terabox-video-downloader-and-stream.onrender.com"
 PORT = 5000
 
 COOKIE_FILES = [
